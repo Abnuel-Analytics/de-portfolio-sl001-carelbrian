@@ -1,0 +1,71 @@
+name: portfolio-ci
+
+# Lightweight CI for a learner portfolio. Mirrors what module 15 teaches:
+# lint + test code, validate Terraform, and parse dbt — all credential-free
+# so it runs on every PR without needing GCP access.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: python (ruff + pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+      - name: Ruff
+        run: |
+          uvx ruff format --check .
+          uvx ruff check --output-format=github .
+      - name: Pytest (where tests exist)
+        shell: bash
+        run: |
+          if find . -type d -name tests | grep -q .; then
+            uv sync 2>/dev/null || true
+            uv run pytest -q || pytest -q
+          else
+            echo "No tests yet — skipping."
+          fi
+
+  terraform:
+    name: terraform (fmt + validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: fmt + validate
+        shell: bash
+        run: |
+          terraform fmt -check -recursive || (echo "Run 'terraform fmt -recursive'"; exit 1)
+          for d in $(find . -name '*.tf' -exec dirname {} \; | sort -u); do
+            echo "::group::validate $d"
+            terraform -chdir="$d" init -backend=false -input=false
+            terraform -chdir="$d" validate
+            echo "::endgroup::"
+          done
+
+  dbt:
+    name: dbt (parse)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - name: dbt parse (no warehouse)
+        shell: bash
+        run: |
+          for d in $(find . -name dbt_project.yml -exec dirname {} \;); do
+            echo "::group::dbt parse $d"
+            ( cd "$d" && uvx --from dbt-bigquery dbt parse )
+            echo "::endgroup::"
+          done
+          echo "done"
